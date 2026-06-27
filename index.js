@@ -23,7 +23,6 @@ const client = new Client({
     partials: [Partials.Message, Partials.Reaction]
 });
 
-// Sistem de salvare locală pentru planul gratuit (fără /data)
 const MESSAGES_FILE = './messages.json';
 let messageCounts = {};
 
@@ -39,17 +38,13 @@ function saveMessages() {
     fs.writeFileSync(MESSAGES_FILE, JSON.stringify(messageCounts, null, 2));
 }
 
-// Monitorizare mesaje trimise
 client.on('messageCreate', (message) => {
     if (message.author.bot || !message.guild) return;
-    
     const key = `${message.guild.id}-${message.author.id}`;
     messageCounts[key] = (messageCounts[key] || 0) + 1;
-    
     saveMessages();
 });
 
-// Manager Giveaway-uri configurat local pentru planul gratuit
 const manager = new GiveawaysManager(client, {
     storage: './giveaways.json',
     default: {
@@ -76,7 +71,6 @@ client.giveawaysManager = manager;
 
 client.on('ready', async () => {
     console.log(`✅ Aku este online ca ${client.user.tag}!`);
-    
     const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
     try {
         await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
@@ -98,6 +92,33 @@ const commands = [
             { name: 'rol_necesar', description: 'Rolul obligatoriu pentru a participa', type: ApplicationCommandOptionType.Role, required: false },
             { name: 'mesaje_minime', description: 'Numărul de mesaje trimise necesar', type: ApplicationCommandOptionType.Integer, required: false },
             { name: 'invitatii_minime', description: 'Numărul de invitații necesar', type: ApplicationCommandOptionType.Integer, required: false }
+        ]
+    },
+    {
+        name: 'edit-giveaway',
+        description: 'Editează un giveaway sau cerințele lui din mers',
+        options: [
+            { name: 'id_mesaj', description: 'ID-ul mesajului de giveaway pe care vrei să-l editezi', type: ApplicationCommandOptionType.String, required: true },
+            { name: 'premiu_nou', description: 'Schimbă premiul (opțional)', type: ApplicationCommandOptionType.String, required: false },
+            { name: 'castigatori_noi', description: 'Schimbă numărul de câștigători (opțional)', type: ApplicationCommandOptionType.Integer, required: false },
+            { name: 'adauga_timp', description: 'Adaugă timp suplimentar (ex: 5m, 1h) (opțional)', type: ApplicationCommandOptionType.String, required: false },
+            { name: 'mesaje_minime_noi', description: 'Schimbă numărul nou de mesaje minime (opțional)', type: ApplicationCommandOptionType.Integer, required: false },
+            { name: 'invitatii_minime_noi', description: 'Schimbă numărul nou de invitații minime (opțional)', type: ApplicationCommandOptionType.Integer, required: false },
+            { name: 'rol_necesar_nou', description: 'Schimbă rolul obligatoriu (opțional)', type: ApplicationCommandOptionType.Role, required: false }
+        ]
+    },
+    {
+        name: 'end-giveaway',
+        description: 'Termină un giveaway IMEDIAT și extrage câștigătorii pe loc',
+        options: [
+            { name: 'id_mesaj', description: 'ID-ul mesajului de giveaway', type: ApplicationCommandOptionType.String, required: true }
+        ]
+    },
+    {
+        name: 'cancel-giveaway',
+        description: 'Anulează un giveaway complet (se oprește fără câștigători)',
+        options: [
+            { name: 'id_mesaj', description: 'ID-ul mesajului de giveaway', type: ApplicationCommandOptionType.String, required: true }
         ]
     },
     {
@@ -171,16 +192,25 @@ client.on('interactionCreate', async (interaction) => {
             winnerCount: winnerCount,
             hostedBy: interaction.user,
             messages: customMessagesConfig,
-            exemptMembers: async (member) => {
-                if (requiredRole && !member.roles.cache.has(requiredRole.id)) return true;
+            extraData: {
+                minMessages: minMessages,
+                minInvites: minInvites,
+                requiredRoleId: requiredRole ? requiredRole.id : null
+            },
+            exemptMembers: async (member, giveaway) => {
+                const reqRoleId = giveaway.extraData?.requiredRoleId;
+                const minMsgs = giveaway.extraData?.minMessages || 0;
+                const minInvs = giveaway.extraData?.minInvites || 0;
 
-                if (minMessages > 0) {
+                if (reqRoleId && !member.roles.cache.has(reqRoleId)) return true;
+
+                if (minMsgs > 0) {
                     const msgKey = `${member.guild.id}-${member.id}`;
                     const userMessages = messageCounts[msgKey] || 0;
-                    if (userMessages < minMessages) return true;
+                    if (userMessages < minMsgs) return true;
                 }
 
-                if (minInvites > 0) {
+                if (minInvs > 0) {
                     let userInvites = 0;
                     try {
                         const guildInvites = await member.guild.invites.fetch();
@@ -192,7 +222,7 @@ client.on('interactionCreate', async (interaction) => {
                     } catch {
                         userInvites = 0;
                     }
-                    if (userInvites < minInvites) return true;
+                    if (userInvites < minInvs) return true;
                 }
 
                 return false;
@@ -207,6 +237,74 @@ client.on('interactionCreate', async (interaction) => {
             interaction.editReply({ content: '✅ Giveaway-ul a fost lansat cu succes!' });
         }).catch((err) => {
             interaction.editReply({ content: `❌ Eroare la pornire: ${err}` });
+        });
+    }
+
+    // Editare din mers (Inclusiv cerintele de mesaje/roluri)
+    if (interaction.commandName === 'edit-giveaway') {
+        if (!interaction.member.permissions.has('ManageMessages')) {
+            return interaction.reply({ content: '❌ Fără permisiuni!', ephemeral: true });
+        }
+
+        const messageId = interaction.options.getString('id_mesaj');
+        const newPrize = interaction.options.getString('premiu_nou');
+        const newWinners = interaction.options.getInteger('castigatori_noi');
+        const addTime = interaction.options.getString('adauga_timp');
+        const newMinMsgs = interaction.options.getInteger('mesaje_minime_noi');
+        const newMinInvs = interaction.options.getInteger('invitatii_minime_noi');
+        const newRole = interaction.options.getRole('rol_necesar_nou');
+
+        await interaction.reply({ content: '⏳ Se modifică datele...', ephemeral: true });
+
+        const giveaway = client.giveawaysManager.giveaways.find((g) => g.messageId === messageId);
+        if (!giveaway) return interaction.editReply({ content: '❌ Giveaway-ul nu a fost găsit.' });
+
+        const currentExtraData = giveaway.extraData || {};
+        if (newMinMsgs !== null) currentExtraData.minMessages = newMinMsgs;
+        if (newMinInvs !== null) currentExtraData.minInvites = newMinInvs;
+        if (newRole !== null) currentExtraData.requiredRoleId = newRole ? newRole.id : null;
+
+        const editOptions = {
+            newExtraData: currentExtraData
+        };
+        if (newPrize) editOptions.newPrize = newPrize;
+        if (newWinners) editOptions.newWinnerCount = newWinners;
+        if (addTime) editOptions.addTime = require('ms')(addTime);
+
+        client.giveawaysManager.edit(messageId, editOptions).then(() => {
+            interaction.editReply({ content: '✅ Cerințele și datele giveaway-ului au fost actualizate din mers!' });
+        }).catch((err) => {
+            interaction.editReply({ content: `❌ Eroare la editare: ${err}` });
+        });
+    }
+
+    // Încheiere instantă cu extragere pe loc
+    if (interaction.commandName === 'end-giveaway') {
+        if (!interaction.member.permissions.has('ManageMessages')) {
+            return interaction.reply({ content: '❌ Fără permisiuni!', ephemeral: true });
+        }
+        const messageId = interaction.options.getString('id_mesaj');
+        await interaction.reply({ content: '⏳ Se oprește giveaway-ul și se extrag câștigătorii...', ephemeral: true });
+
+        client.giveawaysManager.end(messageId).then(() => {
+            interaction.editReply({ content: '✅ Giveaway-ul a fost oprit cu succes, câștigătorii au fost extrași!' });
+        }).catch(() => {
+            interaction.editReply({ content: '❌ Nu am putut opri acest giveaway. Verifică dacă ID-ul este corect sau dacă nu cumva e deja încheiat.' });
+        });
+    }
+
+    // Anulare completă (ștergere fără extragere)
+    if (interaction.commandName === 'cancel-giveaway') {
+        if (!interaction.member.permissions.has('ManageMessages')) {
+            return interaction.reply({ content: '❌ Fără permisiuni!', ephemeral: true });
+        }
+        const messageId = interaction.options.getString('id_mesaj');
+        await interaction.reply({ content: '⏳ Se anulează giveaway-ul...', ephemeral: true });
+
+        client.giveawaysManager.delete(messageId).then(() => {
+            interaction.editReply({ content: '🛑 Giveaway-ul a fost anulat și șters complet de pe server!' });
+        }).catch(() => {
+            interaction.editReply({ content: '❌ Nu am putut anula giveaway-ul.' });
         });
     }
 });
