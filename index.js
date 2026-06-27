@@ -9,6 +9,7 @@ const {
     EmbedBuilder
 } = require('discord.js');
 const { GiveawaysManager } = require('discord-giveaways');
+const fs = require('fs');
 
 const client = new Client({
     intents: [
@@ -22,18 +23,35 @@ const client = new Client({
     partials: [Partials.Message, Partials.Reaction]
 });
 
-const messageCounts = new Map();
+// Sistem de salvare permanentă pe RENDER DISK (modificat în /data/)
+const MESSAGES_FILE = '/data/messages.json';
+let messageCounts = {};
+
+if (fs.existsSync(MESSAGES_FILE)) {
+    try {
+        messageCounts = JSON.parse(fs.readFileSync(MESSAGES_FILE, 'utf-8'));
+    } catch (e) {
+        messageCounts = {};
+    }
+}
+
+function saveMessages() {
+    fs.writeFileSync(MESSAGES_FILE, JSON.stringify(messageCounts, null, 2));
+}
 
 // Monitorizare mesaje trimise
 client.on('messageCreate', (message) => {
     if (message.author.bot || !message.guild) return;
+    
     const key = `${message.guild.id}-${message.author.id}`;
-    messageCounts.set(key, (messageCounts.get(key) || 0) + 1);
+    messageCounts[key] = (messageCounts[key] || 0) + 1;
+    
+    saveMessages();
 });
 
-// Manager Giveaway-uri
+// Manager Giveaway-uri pe RENDER DISK (modificat în /data/)
 const manager = new GiveawaysManager(client, {
-    storage: './giveaways.json',
+    storage: '/data/giveaways.json',
     default: {
         botsCanWin: false,
         embedColor: '#5865F2', 
@@ -68,7 +86,6 @@ client.on('ready', async () => {
     }
 });
 
-// Definire Comenzi Slash cu noile cerințe de activitate
 const commands = [
     {
         name: 'start-giveaway',
@@ -94,7 +111,7 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.commandName === 'stats') {
         const msgKey = `${interaction.guild.id}-${interaction.user.id}`;
-        const totalMessages = messageCounts.get(msgKey) || 0;
+        const totalMessages = messageCounts[msgKey] || 0;
 
         let totalInvites = 0;
         try {
@@ -139,7 +156,6 @@ client.on('interactionCreate', async (interaction) => {
 
         const customMessagesConfig = { ...manager.options.default.messages };
         
-        // Construim textul cu cerințe din embed
         let cerinteText = '';
         if (requiredRole) cerinteText += `• Rol necesar: ${requiredRole}\n`;
         if (minMessages > 0) cerinteText += `• Mesaje minime scrise: \`${minMessages}\`\n`;
@@ -155,19 +171,15 @@ client.on('interactionCreate', async (interaction) => {
             winnerCount: winnerCount,
             hostedBy: interaction.user,
             messages: customMessagesConfig,
-            // Funcția principală de filtrare automată a membrilor la extragere
             exemptMembers: async (member) => {
-                // 1. Verificare Rol
                 if (requiredRole && !member.roles.cache.has(requiredRole.id)) return true;
 
-                // 2. Verificare Mesaje scrise
                 if (minMessages > 0) {
                     const msgKey = `${member.guild.id}-${member.id}`;
-                    const userMessages = messageCounts.get(msgKey) || 0;
+                    const userMessages = messageCounts[msgKey] || 0;
                     if (userMessages < minMessages) return true;
                 }
 
-                // 3. Verificare Invitații
                 if (minInvites > 0) {
                     let userInvites = 0;
                     try {
@@ -183,7 +195,7 @@ client.on('interactionCreate', async (interaction) => {
                     if (userInvites < minInvites) return true;
                 }
 
-                return false; // Membrul este valid, poate câștiga
+                return false;
             }
         };
 
