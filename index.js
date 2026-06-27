@@ -23,8 +23,8 @@ const client = new Client({
     partials: [Partials.Message, Partials.Reaction]
 });
 
-// Sistem de salvare permanentă pe RENDER DISK (modificat în /data/)
-const MESSAGES_FILE = '/data/messages.json';
+// Sistem de salvare locală pentru planul gratuit (fără /data)
+const MESSAGES_FILE = './messages.json';
 let messageCounts = {};
 
 if (fs.existsSync(MESSAGES_FILE)) {
@@ -49,9 +49,9 @@ client.on('messageCreate', (message) => {
     saveMessages();
 });
 
-// Manager Giveaway-uri pe RENDER DISK (modificat în /data/)
+// Manager Giveaway-uri configurat local pentru planul gratuit
 const manager = new GiveawaysManager(client, {
-    storage: '/data/giveaways.json',
+    storage: './giveaways.json',
     default: {
         botsCanWin: false,
         embedColor: '#5865F2', 
